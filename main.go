@@ -1,8 +1,7 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -11,121 +10,210 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
-func generateClientCertFromEnv(clientCommonName, outputPrefix string) error {
-	// Load .env
-	err := godotenv.Load(".env")
-	if err != nil {
-		return fmt.Errorf("loading .env file: %w", err)
-	}
+func main() {
 
-	caCertB64 := os.Getenv("ROOT_CA_CERT_BASE64")
-	caKeyB64 := os.Getenv("ROOT_CA_KEY_BASE64")
-	if caCertB64 == "" || caKeyB64 == "" {
-		return fmt.Errorf("missing ROOT_CA_CERT_BASE64 or ROOT_CA_KEY_BASE64")
-	}
+	GenerateCertificate("example.netsepio.com")
+	VerifyCertificate()
 
-	// Decode and parse CA certificate
-	caCertDER, err := base64.StdEncoding.DecodeString(caCertB64)
-	if err != nil {
-		return fmt.Errorf("decoding CA cert: %w", err)
-	}
-	caBlock, _ := pem.Decode(caCertDER)
-	if caBlock == nil || caBlock.Type != "CERTIFICATE" {
-		return fmt.Errorf("invalid PEM block for CA cert")
-	}
-	caCert, err := x509.ParseCertificate(caBlock.Bytes)
-	if err != nil {
-		return fmt.Errorf("parsing CA cert: %w", err)
-	}
-
-	// Decode and parse CA private key
-	caKeyDER, err := base64.StdEncoding.DecodeString(caKeyB64)
-	if err != nil {
-		return fmt.Errorf("decoding CA key: %w", err)
-	}
-	caKeyBlock, _ := pem.Decode(caKeyDER)
-	if caKeyBlock == nil {
-		return fmt.Errorf("invalid PEM block for CA key")
-	}
-
-	var caKey interface{}
-	switch caKeyBlock.Type {
-	case "RSA PRIVATE KEY":
-		caKey, err = x509.ParsePKCS1PrivateKey(caKeyBlock.Bytes)
-	case "EC PRIVATE KEY":
-		caKey, err = x509.ParseECPrivateKey(caKeyBlock.Bytes)
-	default:
-		return fmt.Errorf("unsupported CA private key type: %s", caKeyBlock.Type)
-	}
-	if err != nil {
-		return fmt.Errorf("parsing CA private key: %w", err)
-	}
-
-	// Generate client ECDSA key
-	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return fmt.Errorf("generating client key: %w", err)
-	}
-
-	// Create certificate template
-	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	clientTemplate := &x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			CommonName: clientCommonName,
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  false,
-	}
-
-	// Sign client cert with CA
-	clientCertDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, &clientKey.PublicKey, caKey)
-	if err != nil {
-		return fmt.Errorf("creating client cert: %w", err)
-	}
-
-	// Save client cert
-	certOut, err := os.Create(outputPrefix + ".crt")
-	if err != nil {
-		return fmt.Errorf("writing cert file: %w", err)
-	}
-	defer certOut.Close()
-	err = pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: clientCertDER})
-	if err != nil {
-		return fmt.Errorf("encoding cert PEM: %w", err)
-	}
-
-	// Save client private key
-	keyOut, err := os.Create(outputPrefix + ".key")
-	if err != nil {
-		return fmt.Errorf("writing key file: %w", err)
-	}
-	defer keyOut.Close()
-	clientKeyBytes, err := x509.MarshalECPrivateKey(clientKey)
-	if err != nil {
-		return fmt.Errorf("marshalling EC key: %w", err)
-	}
-	err = pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: clientKeyBytes})
-	if err != nil {
-		return fmt.Errorf("encoding key PEM: %w", err)
-	}
-
-	fmt.Println("✅ Client cert and key written to", outputPrefix+".crt", "and", outputPrefix+".key")
-	return nil
 }
 
-func main() {
-	err := generateClientCertFromEnv("client1.wallet123", "./output/client1")
-	if err != nil {
-		fmt.Println("❌ Error:", err)
+func VerifyCertificate() {
+
+	if err := godotenv.Load(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not load .env file: %v\n", err)
 	}
+
+	caCertBase64 := os.Getenv("ROOT_CA_CERT_BASE64")
+	caKeyBase64 := os.Getenv("ROOT_CA_KEY_BASE64")
+
+	dir := "certs/leaf"
+
+	leafCertPath := filepath.Join(dir, "leaf_cert.pem")
+	leafKeyPath := filepath.Join(dir, "leaf_key.pem")
+
+	// Just to show the key is read (optional)
+	leafKeyPEM, err := os.ReadFile(leafKeyPath)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Loaded leaf private key file (%s), length: %d bytes\n", leafKeyPath, len(leafKeyPEM))
+
+	// Verify leaf cert
+	if err := verifyCertFromFiles(caCertBase64, caKeyBase64, leafCertPath); err != nil {
+		panic("Verification failed: " + err.Error())
+	}
+
+	fmt.Println("Leaf certificate verified successfully!")
+
+}
+
+func GenerateCertificate(domain string) {
+
+	if err := godotenv.Load(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not load .env file: %v\n", err)
+	}
+
+	caCertBase64 := os.Getenv("ROOT_CA_CERT_BASE64")
+	caKeyBase64 := os.Getenv("ROOT_CA_KEY_BASE64")
+
+	caCertPEM, err := base64.StdEncoding.DecodeString(caCertBase64)
+	if err != nil {
+		panic(err)
+	}
+	caKeyPEM, err := base64.StdEncoding.DecodeString(caKeyBase64)
+	if err != nil {
+		panic(err)
+	}
+
+	caCert, caKey, err := parseCACertKey(caCertPEM, caKeyPEM)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Loaded CA certificate and key successfully.")
+
+	leafCertPEM, leafKeyPEM, err := generateSignedCert(caCert, caKey, domain)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create folder if not exist
+	dir := "certs/leaf"
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		panic(err)
+	}
+
+	leafCertPath := filepath.Join(dir, "leaf_cert.pem")
+	leafKeyPath := filepath.Join(dir, "leaf_key.pem")
+
+	if err := os.WriteFile(leafCertPath, leafCertPEM, 0644); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(leafKeyPath, leafKeyPEM, 0600); err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Leaf certificate and key saved:\n - %s\n - %s\n", leafCertPath, leafKeyPath)
+
+}
+
+func generateSignedCert(caCert *x509.Certificate, caKey ed25519.PrivateKey, commonName string) ([]byte, []byte, error) {
+	_, leafPrivKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	serialNumber, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName: commonName,
+		},
+		NotBefore: time.Now().Add(-time.Hour),
+		NotAfter:  time.Now().Add(365 * 24 * time.Hour),
+
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, caCert, leafPrivKey.Public(), caKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: certDER,
+	})
+
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(leafPrivKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: keyBytes,
+	})
+
+	return certPEM, keyPEM, nil
+}
+
+func parseCACertKey(certPEM, keyPEM []byte) (*x509.Certificate, ed25519.PrivateKey, error) {
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
+		return nil, nil, fmt.Errorf("invalid CA certificate PEM")
+	}
+	caCert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil || keyBlock.Type != "PRIVATE KEY" {
+		return nil, nil, fmt.Errorf("invalid CA private key PEM")
+	}
+	keyParsed, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	edPrivKey, ok := keyParsed.(ed25519.PrivateKey)
+	if !ok {
+		return nil, nil, fmt.Errorf("CA private key is not Ed25519")
+	}
+
+	return caCert, edPrivKey, nil
+}
+
+func verifyCertFromFiles(caCertBase64, caKeyBase64, leafCertPath string) error {
+
+	caCertPEM, err := base64.StdEncoding.DecodeString(caCertBase64)
+	if err != nil {
+		panic(err)
+	}
+
+	caKeyPEM, err := base64.StdEncoding.DecodeString(caKeyBase64)
+	if err != nil {
+		panic(err)
+	}
+
+	caCert, _, err := parseCACertKey(caCertPEM, caKeyPEM)
+	if err != nil {
+		panic(err)
+	}
+
+	leafCertPEM, err := os.ReadFile(leafCertPath)
+	if err != nil {
+		return fmt.Errorf("failed to read leaf cert file: %w", err)
+	}
+
+	block, _ := pem.Decode(leafCertPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return fmt.Errorf("invalid leaf cert PEM")
+	}
+	leafCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return err
+	}
+
+	roots := x509.NewCertPool()
+	roots.AddCert(caCert)
+
+	opts := x509.VerifyOptions{
+		Roots: roots,
+	}
+
+	if _, err := leafCert.Verify(opts); err != nil {
+		return fmt.Errorf("failed to verify leaf certificate: %w", err)
+	}
+
+	return nil
 }

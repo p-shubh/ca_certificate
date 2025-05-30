@@ -1,0 +1,4 @@
+
+STEP 1: openssl genpkey -algorithm Ed25519 -out key.pem
+
+STEP 2: openssl req -new -x509 -key key.pem -out cert.pem -days 365 -subj "/CN=netsepio.com"
