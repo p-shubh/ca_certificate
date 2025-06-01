@@ -35,14 +35,6 @@ func VerifyCertificate() {
 	dir := "certs/leaf"
 
 	leafCertPath := filepath.Join(dir, "leaf_cert.pem")
-	leafKeyPath := filepath.Join(dir, "leaf_key.pem")
-
-	// Just to show the key is read (optional)
-	leafKeyPEM, err := os.ReadFile(leafKeyPath)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("Loaded leaf private key file (%s), length: %d bytes\n", leafKeyPath, len(leafKeyPEM))
 
 	// Verify leaf cert
 	if err := verifyCertFromFiles(caCertBase64, caKeyBase64, leafCertPath); err != nil {
